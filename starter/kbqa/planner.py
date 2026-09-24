@@ -8,6 +8,7 @@ from datetime import date
 from typing import Callable, Optional
 
 from . import entities as E
+from . import guard
 from .followup import FollowUps
 from .timeparse import TimeSpec, parse_time
 
@@ -87,6 +88,16 @@ class Planner:
             return plan
         if standalone != question:
             plan.notes.append("这是一句追问，已按上一轮补全为：%s" % standalone)
+
+        # 意图闸门放在越界判断**之前**：要求删改数据、套取系统信息的请求不该被当成
+        # 普通问题送去检索或取数——那样只会把一段无关的文档原文端回去。契约与作业
+        # 都要求这类请求直接拒绝，且数据库不能有任何改动。
+        forbidden = guard.refusal_for(standalone)
+        if forbidden:
+            plan.intent, plan.kind = "refusal", "forbidden"
+            plan.refusal = forbidden
+            plan.notes.append("意图闸门：要求改动数据或套取系统信息")
+            return plan
 
         # 越界判断放在追问还原之后：“那 7 月呢”要先补成完整问题才判得准。
         head = E.head_clause(standalone)
@@ -248,14 +259,24 @@ class Planner:
         else:
             plan.kind, plan.intent = "summary", "data"
 
-        # 路由：问“多少/多久/几”的就是要数字，问“为什么/原因”的就是要说法。
-        # 两边都走一遍太慢，没必要。
-        if E.has_any(text, ("多少", "多久", "几")):
-            plan.intent = "data"
-            if plan.kind in ("doc", "anomaly", "target", "price"):
-                plan.kind = "summary"
-        elif E.has_any(text, ("为什么", "原因", "怎么回事", "咋回事")):
-            plan.intent, plan.kind = "doc", "doc"
+        # 这里原本还有一段兜底路由：「问『多少/多久/几』的就是要数字，问『为什么/原因』的就是要说法，
+        # 两边都走一遍太慢」。它跑在以上全部判断**之后**，会把已经判对的结果推翻：
+        #
+        #   · 「外卖订单多久内可以申请退款」「员工迟到多久算一次」「三文鱼那次断供赔了我们多少钱」
+        #     ——这些数写在制度、邮件里，却被推成取数题（`POLICY_WORDS` 里本来就列着「多久」「几点」，
+        #     两段代码是互相矛盾的）；
+        #   · 「Super Souper 现在周五晚上营业到几点」——被判成取数题后，「现在」解析成今天
+        #     2026-09-01，落在销售明细（截至 2026-08-31）之外，`_check_period` 于是把一句
+        #     文档问题当成「区间外」拒答；
+        #   · 「S03 六月第二周营业额为什么这么低」——问原因本来要文档加数据库一起用（hybrid），
+        #     被「为什么」那一支强制成纯文档题，数据库那一半就丢了。
+        #
+        # 而它想兜的那类问题（「牛肉poke 六月一共卖了多少钱」「味噌拉面 7 月卖了多少碗」）
+        # 已经由 `METRIC_WORDS` 里的「卖了多少钱」「多少碗」识别成显式指标，走的是上面的正常分支。
+        # 至于「两边都走一遍太慢」：`needs_data` / `needs_docs` 由 kind 与 intent 决定，
+        # 只有 hybrid 才会两边都走，删掉这段并不会让取数题多跑一遍检索。
+        #
+        # 所以这一段整体删除。路由只由上面那一串有依据的判断决定。
 
         plan.slots["asks_why"] = bool(asks_why or abnormal)
         plan.slots["about_names"] = E.asks_about_names(text)

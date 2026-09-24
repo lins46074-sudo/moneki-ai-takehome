@@ -9,6 +9,11 @@ from datetime import date
 from pathlib import Path
 from typing import Optional
 
+#: 读文档的规则变了（支持的后缀、元数据的键），索引缓存必须失效。
+#: 这一项进缓存键：只改 loader 而不改切块/分词时，光靠知识库内容哈希是发现不了的，
+#: 缓存会把旧格式的元数据一直带下去（`state`/`status` 那次就是这么卡住的）。
+LOADER_VERSION = "loader-2"
+
 #: 知识库里有 md、txt、html 三种格式，都要能进索引。
 SUPPORTED_SUFFIXES = {".md", ".markdown", ".txt", ".html", ".htm"}
 
@@ -68,11 +73,14 @@ class Document:
         return int(match.group(1)) if match else None
 
     def meta(self) -> dict:
+        # 键名与读它的地方必须一致：`retriever._eligible()` 与 `docfacts.version_note()`
+        # 读的都是 `status`。这里曾经写成 `state`，字典取不到键只返回 None、不报错，
+        # 于是「已废止的版本要挡掉」的判断从来没成立过，引用里的版本说明也从来没出现过。
         return {
             "doc_id": self.doc_id,
             "title": self.title,
             "type": self.doc_type,
-            "state": self.status,
+            "status": self.status,
             "effective_from": self.effective_from.isoformat() if self.effective_from else None,
             "superseded_by": self.superseded_by,
             "stores": self.stores,

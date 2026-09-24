@@ -74,7 +74,13 @@ class Answerer(HybridAnswers):
         candidates = self._candidates(plan, result, require_value=True)
         if not candidates:
             candidates = self._candidates(plan, result, require_value=False)
-        candidates.sort(key=lambda item: (round(item["score"], 2), item["effective_from"]))
+        # 分数**从高到低**：下面是照着顺序取前 `limit` 条的，排序方向反了就会从最弱的
+        # 证据开始挑。实测「会员单笔充值满 500 送多少」，KB-011 里那句
+        # 「单笔充值满 500 元，赠送 60 元」加权分 1.54，升序时却输给 KB-051 周报里
+        # 0.02 分的一句，于是引用的是周报和另一份退款政策。
+        # 分数相同时（取整到分位）以生效日期更新的为准——营业时间总表和后来的调整通知
+        # 会给出互相矛盾的时间，要用新的那一份。
+        candidates.sort(key=lambda item: (-round(item["score"], 2), item["effective_from"]))
         lines: list[str] = []
         citations: list[dict] = []
         used_terms: set[str] = set()
@@ -310,14 +316,6 @@ class Answerer(HybridAnswers):
 
     # -- 纯文档 -----------------------------------------------------------------
 
-    def _context(self, result: SearchResult) -> str:
-        """把命中的那篇文档原样拼进来，答案就在里面，别漏了。"""
-        blocks: list[str] = []
-        for hit in result.hits[:1]:
-            for chunk in self.retriever.index.chunks_of(hit.doc_id):
-                blocks.append(chunk.text)
-        return ("\n".join(blocks) + "\n") if blocks else ""
-
     def _should_refuse(self, plan: Plan, confidence: float, top_score: float) -> Optional[str]:
         """三个信号一起判断“知识库里到底有没有这件事”。"""
         vocab = self.facts.vocab_coverage(plan.slots.get("clean_question") or plan.standalone)
@@ -351,4 +349,14 @@ class Answerer(HybridAnswers):
                 answer_type="clarify",
                 notes=["检索最高分 %.1f，且问题里没有指标、时间或门店" % top_score],
             )
-        return Answer(answer=self._context(result) + body, answer_type="doc", citations=citations)
+        # 回答正文就是上面挑出来的那几句（引用与正文同源），**不再**把整篇文档倒进来。
+        #
+        # 原来这里是 `self._context(result) + body`，`_context` 会把检索第一名那篇文档的
+        # 全部片段拼进 answer。那是条拐杖：事实确实被塞进了 answer，但同时
+        #   · 正文来自检索第一名（`result.hits[:1]`），引用来自候选句排序，两条路各走各的，
+        #     于是出现「正文是 KB-011 的内容、citations 却是 KB-051/KB-013」这种自相矛盾；
+        #   · 契约 §5 对 answer 有 1200 字、20 个不同数字的上限，倒一篇文档必然超限
+        #     （实测「7 月顾客投诉…」被倒成 1701 字、24 个数字）。
+        # 改成只给挑出来的句子之后，正文与引用由同一份数据产生，天然一致，
+        # 长度与数字也回到回答该有的量级。
+        return Answer(answer=body, answer_type="doc", citations=citations)

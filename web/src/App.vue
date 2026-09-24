@@ -8,6 +8,7 @@
 import { computed, onMounted, ref } from 'vue'
 
 import { api, sliceParams } from '@/api'
+import ChatCard from '@/components/ChatCard.vue'
 import DataQualityCard from '@/components/DataQualityCard.vue'
 import FilterBar from '@/components/FilterBar.vue'
 import StatTiles from '@/components/StatTiles.vue'
@@ -137,6 +138,9 @@ onMounted(() => {
       />
 
       <StatTiles :summary="summary" :days="days.length" :loading="refreshing" />
+
+      <!-- 对话框放在 KPI 之后：运营第一眼看到的是数字，要问的时候它就在下面 -->
+      <ChatCard />
 
       <div class="grid two">
         <TrendCard :days="days" :loading="refreshing" />

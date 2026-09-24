@@ -151,8 +151,21 @@ class CleaningReport:
 
 
 def open_readonly(path: Path) -> sqlite3.Connection:
-    """打开数据库。"""
-    conn = sqlite3.connect(path.as_posix(), check_same_thread=False)
+    """以**真正的只读方式**打开数据库。
+
+    名字说的是只读，就得真的是只读：用 SQLite 的 `mode=ro` URI 打开，写入会被
+    数据库自己拒绝（`attempt to write a readonly database`）。
+
+    以前这里开的是普通读写连接，于是取数工具里的 `run_sql` 真能把数据改掉——
+    而它还是暴露给模型的工具之一，一条提示注入就能到那里。作业明确要求
+    「数据库不能有任何改动」，所以这一层必须由数据库自己兜住，而不是只靠上层拦。
+
+    `as_uri()` 会把路径里的非 ASCII 字符与空格做百分号转义，直接拼 `file:` 前缀
+    在中文路径下会打不开。
+    """
+    conn = sqlite3.connect(
+        path.resolve().as_uri() + "?mode=ro", uri=True, check_same_thread=False
+    )
     conn.row_factory = sqlite3.Row
     return conn
 

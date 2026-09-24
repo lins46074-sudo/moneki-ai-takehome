@@ -111,10 +111,26 @@ const PROBE = `(() => {
     count: Number(row.querySelector('.count').textContent.replace(/[^0-9]/g, '')),
     bar: width(row.querySelector('.bar > i')),
   }));
+  // 溢出报告要能直接定位到人：给出选择器路径、实际尺寸与一小段文本
+  const describe = (el) => {
+    const path = [];
+    for (let node = el; node && node !== document.body; node = node.parentElement) {
+      let name = node.tagName.toLowerCase();
+      if (node.id) name += '#' + node.id;
+      else if (node.classList.length) name += '.' + [...node.classList].join('.');
+      path.unshift(name);
+    }
+    return {
+      selector: path.join(' > '),
+      width: el.clientWidth,
+      scrollWidth: el.scrollWidth,
+      text: (el.textContent || '').trim().slice(0, 40),
+    };
+  };
   const overflow = [...document.querySelectorAll('body *')]
     .filter((el) => el.scrollWidth > el.clientWidth + 1 && getComputedStyle(el).overflowX === 'visible')
     .slice(0, 6)
-    .map((el) => el.className || el.tagName);
+    .map(describe);
   return {
     theme: document.documentElement.dataset.theme,
     heroFontSize: getComputedStyle(document.querySelector('.tile.hero .value')).fontSize,
@@ -134,9 +150,11 @@ async function main() {
   const client = await connect(await targetUrl())
   await client.send('Page.enable')
   await client.send('Runtime.enable')
+  const heightIndex = args.indexOf('--height')
+  const viewportHeight = heightIndex >= 0 ? Number(args[heightIndex + 1]) : 1200
   await client.send('Emulation.setDeviceMetricsOverride', {
     width: 1440,
-    height: 1200,
+    height: viewportHeight,
     deviceScaleFactor: 1,
     mobile: false,
   })
@@ -148,9 +166,10 @@ async function main() {
   await client.send('Page.navigate', { url })
   await sleep(2500)
 
-  // --click 选择器：进页面前先点几下，用来截「表」这类需要交互才出现的状态
-  if (args.includes('--click')) {
-    const selector = args[args.indexOf('--click') + 1]
+  // --click 选择器，可以给多次：按顺序点，用来截「表」「依据展开」这类要交互才出现的状态
+  for (let index = 0; index < args.length; index += 1) {
+    if (args[index] !== '--click') continue
+    const selector = args[index + 1]
     await evaluate(
       client,
       `(() => {
@@ -171,7 +190,10 @@ async function main() {
     throw new Error('页面出现横向滚动条，布局溢出了')
   }
   if (report.overflow.length) {
-    throw new Error(`有元素内容溢出：${report.overflow.join(', ')}`)
+    const lines = report.overflow.map(
+      (item) => `  ${item.selector}（可见宽 ${item.width}，内容宽 ${item.scrollWidth}）：${item.text}`,
+    )
+    throw new Error(`有元素内容溢出：\n${lines.join('\n')}`)
   }
   console.log(JSON.stringify(report, null, 2))
 
@@ -209,7 +231,9 @@ async function main() {
     const suffix = hasClip ? 'clip' : hasCard ? 'card' : 'dashboard'
     const file = path.join(outDir, `${suffix}-${theme}.png`)
     await writeFile(file, Buffer.from(shot.data, 'base64'))
-    console.log(`已保存 ${file}（${Math.round(clip.width)}×${Math.round(clip.height)}${hasCard ? ' ×2' : ''}）`)
+    console.log(
+      `已保存 ${file}（${Math.round(clip.width)}×${Math.round(clip.height)} ×${scale}）`,
+    )
   }
 
   client.close()

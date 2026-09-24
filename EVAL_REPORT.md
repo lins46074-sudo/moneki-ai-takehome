@@ -12,6 +12,9 @@
 | C | 2026-09-24 | 第一关结束时 `3977bd7` | 无（mock 降级） | **44.50 / 100（44.5%）** | [`eval/runs/gate1-current/`](eval/runs/gate1-current/) |
 | D | 2026-09-24 | 第二关：分词 + 命中标注 + 测试替身 | 无（mock 降级） | **49.00 / 100（49.0%）** | [`eval/runs/gate2-tokenizer/`](eval/runs/gate2-tokenizer/) |
 | E | 2026-09-24 | 第二关：规划 + 版本过滤 + 会话 | 无（mock 降级） | **70.00 / 100（70.0%）** | [`eval/runs/gate2-sessions/`](eval/runs/gate2-sessions/) |
+| F | 2026-09-24 | 第三关：回答层两个根因 | 无（mock 降级） | **84.00 / 100（84.0%）** | [`eval/runs/gate3-answers/`](eval/runs/gate3-answers/) |
+| G | 2026-09-24 | 接入预检（无 Key，假模型） | 假模型 `preflight-model-*` | 14 项检查 **14 项通过** | [`eval/preflight/`](eval/preflight/) |
+| H | 2026-09-24 | 第三关：意图闸门 | 无（mock 降级） | **90.00 / 100（90.0%）** | [`eval/runs/gate3-guard/`](eval/runs/gate3-guard/) |
 
 **A / C / D / E 四轮是同一种模式（无 Key）下的可比数据**：
 
@@ -256,6 +259,93 @@ python eval/run_eval.py --base-url http://localhost:8000 \
 D11/D12 修完第一次跑出来仍是 64.50，排查发现是**评测打到了旧服务**：新进程因 8000 端口被占而绑定失败，
 评测脚本照常连上了没有新代码的旧进程。停掉旧进程、确认启动日志后重跑才是 70.00。
 教训：起服务后要确认真的绑上了端口，不能只看命令返回。
+
+## 四之四、F 轮：回答层两个根因修完（mock）
+
+### 运行命令
+
+```bash
+python eval/run_eval.py --base-url http://localhost:8000 \
+  --questions eval/public_questions.jsonl --out eval/runs/gate3-answers
+```
+
+### 配置
+
+| 项 | 值 |
+|---|---|
+| 是否配置了 Key | 否 |
+| `llm_mode` | `mock` |
+| 修复内容 | 候选证据排序方向反了（D13-a）、`_answer_doc` 把整篇文档原文倒进答案（D13-b） |
+
+### 得分
+
+**84.00 / 100.00（84.0%）**
+
+| 类别 | E（70.00） | F（84.00） | 变化 |
+|---|---|---|---|
+| 指标接口（`metrics`） | 6.00 / 6 | 6.00 / 6 | 持平 |
+| 检索质量（`retrieval`） | 14.00 / 15 | 14.00 / 15 | 持平（R04 见 D6） |
+| 纯数据问题（`data`） | 12.00 / 12 | 12.00 / 12 | 持平 |
+| 纯文档问题（`doc`） | 0.00 / 16 | **8.00 / 16** | **+8.00** |
+| 版本与时效（`version`） | 2.00 / 6 | **6.00 / 6** | **+4.00** |
+| 数据 + 文档（`hybrid`） | 18.00 / 18 | 18.00 / 18 | 持平 |
+| 多轮追问（`multi_turn`） | 9.00 / 9 | 8.00 / 9 | −1.00 |
+| 拒答（`refusal`） | 8.00 / 8 | 8.00 / 8 | 持平 |
+| 安全（`safety`） | 0.00 / 9 | 3.00 / 9 | +3.00 |
+| 健康检查（`health`） | 1.00 / 1 | 1.00 / 1 | 持平 |
+| **合计** | **70.00** | **84.00** | **+14.00** |
+
+两个根因、两行代码的改动，把 `doc` 从 0 拉到 8、`version` 拉到满分。
+`multi_turn` 掉的 1 分是去掉「倒原文」的代价：T02 第 2 轮原本靠倒出的整篇文档凑到了事实，
+现在要真正把「鸡肉poke」那一句挑出来（记为 D18）。
+
+### G 轮：接入预检（不需要 Key）
+
+按契约 §7.5 用 `eval/llm_gateway.py preflight` 跑了一遍接入预检——它在本机起一个按
+DeepSeek 文档行为模拟的假模型，检验服务能不能被原样切到 DeepSeek：
+
+```
+python eval/llm_gateway.py preflight --service-url http://localhost:8000 --out eval/preflight
+```
+
+**总体结论：没有失败项，14 项检查里 14 项通过。** 也就是说 starter 原有的模型接入层
+（`llm.py` / `live.py`）本来就是契约合规的：地址原样拼接（含路径前缀）、模型名与 Key 只从
+环境变量读、只用文档列出的参数、工具多轮之间原样回传 `reasoning_content`、
+任何错误码都返回 200 + 结构化 `refusal`、思考内容没有漏进 `answer`。
+
+完整输出见 [`eval/preflight/preflight_report.md`](eval/preflight/preflight_report.md)。
+
+### H 轮：意图闸门（mock）
+
+**运行命令**
+
+```bash
+python eval/run_eval.py --base-url http://localhost:8000 \
+  --questions eval/public_questions.jsonl --out eval/runs/gate3-guard
+```
+
+**配置**：是否配置 Key = 否，`llm_mode = mock`。
+**修复内容**：要求删改数据／套取系统信息的请求一律拒答（D4）；拒答文案不再带 HTTP 状态码数字（D7）。
+
+**得分 90.00 / 100.00（90.0%）**
+
+| 类别 | F（84.00） | H（90.00） | 变化 |
+|---|---|---|---|
+| 安全（`safety`） | 3.00 / 9 | **9.00 / 9** | **+6.00** |
+| 拒答（`refusal`） | 8.00 / 8 | 8.00 / 8 | 持平（没有误杀） |
+| 其余八类 | — | — | 全部持平 |
+| **合计** | **84.00** | **90.00** | **+6.00** |
+
+## 剩余缺口（16 分里的 10 分）
+
+| 类别 | 缺口 | 原因 | 编号 |
+|---|---|---|---|
+| `doc` | 8 分（4 题） | C02 过敏原表要挑到「牛肉poke」那一行、C03 要挑到调整通知里的 23:00、C04 跨语言（词面接不上）、C08 的 `answer_type` 不对 | D17 |
+| `retrieval` | 1 分 | R04 跨语言 | D6 |
+| `multi_turn` | 1 分 | T02 第 2 轮的句子挑选 | D18 |
+
+其中 C04 与 R04 是同一件事（答案在一封纯英文邮件里，中文问句词面接不上），
+已量化并记为已知限制 —— 见 DEBUG_LOG 的 D6。
 
 ## 五、从基线里看到的第二关线索（先记下来）
 

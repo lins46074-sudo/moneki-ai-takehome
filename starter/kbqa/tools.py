@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import sqlite3
 import threading
 from datetime import date, timedelta
@@ -12,6 +13,9 @@ from typing import Any, Optional
 from .cleaning import open_readonly
 
 METRIC_FIELDS = ("net_revenue", "refund_amount", "orders", "aov", "qty")
+
+#: `run_sql` 只放行只读查询。
+_READ_ONLY_SQL = re.compile(r"^\s*(select|with)\b", re.IGNORECASE)
 
 
 def yuan(cents: int) -> float:
@@ -26,6 +30,9 @@ def round2(value: Decimal) -> float:
 
 class DataTools:
     """清洗表之上的一组只读工具。"""
+
+    #: `run_sql` 只放行只读查询，实例上引用一份，方便测试与阅读。
+    _READ_ONLY = _READ_ONLY_SQL
 
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
@@ -76,11 +83,32 @@ class DataTools:
         return int(self.conn.execute("SELECT COUNT(*) FROM sales_clean").fetchone()[0])
 
     def run_sql(self, sql: str) -> dict:
-        """执行一条 SQL。工具覆盖不到的查法，让模型自己写。"""
-        cursor = self.conn.execute(sql)
-        rows = [dict(row) for row in cursor.fetchall()] if cursor.description else []
-        self.conn.commit()
-        return {"sql": sql, "rows": rows[:50], "row_count": len(rows)}
+        """执行一条**只读** SQL。工具覆盖不到的查法，让模型自己写。
+
+        这里只接受 `SELECT` / `WITH` 开头的语句，别的直接拒绝并把原因返回给模型。
+        连接本身也是只读的（`open_readonly` 用的是 SQLite 的 `mode=ro`），
+        两道闸都留着：这一道给模型一句能看懂的拒绝理由，那一道路才是硬保证。
+
+        以前这里既不判语句、也不捕获错误，还主动 `commit()`——实测
+        `UPDATE sales_clean SET qty = 0 WHERE store_id = 'S01'` 真的把数据改了。
+        """
+        text = (sql or "").strip()
+        if not self._READ_ONLY.match(text):
+            return {
+                "error": "只允许只读查询（SELECT 或 WITH 开头），这个语句不会被执行：%s"
+                % text[:80]
+            }
+        try:
+            cursor = self.conn.execute(text)
+            rows = [dict(row) for row in cursor.fetchall()] if cursor.description else []
+        except sqlite3.Error as exc:
+            return {"error": "SQL 执行失败：%s" % exc}
+        return {
+            "sql": text,
+            "rows": rows[:50],
+            "row_count": len(rows),
+            "truncated": len(rows) > 50,
+        }
 
     def stores(self) -> list[dict]:
         return [dict(r) for r in self.conn.execute("SELECT * FROM stores ORDER BY store_id")]

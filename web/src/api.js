@@ -39,6 +39,15 @@ export const api = {
   topProducts: (params) => request('/metrics/top_products', { params }),
   byStore: (params) => request('/metrics/by_store', { params }),
   dataQuality: () => request('/data_quality'),
+
+  /**
+   * 问答。同一个 session_id 的多次请求算同一段对话，所以由调用方持有它。
+   * 契约 §5：无论内部出什么错，这个接口都返回 200 与合法 JSON——
+   * 也就是说失败会体现为 answer_type 里的 refusal，而不是走到这里抛异常。
+   */
+  chat: (sessionId, question) =>
+    request('/chat', { method: 'POST', body: { session_id: sessionId, question } }),
+  trace: (traceId) => request(`/trace/${encodeURIComponent(traceId)}`),
 }
 
 /** 看板上的所有数字都由同一个筛选条件决定，这里统一拼参数。 */

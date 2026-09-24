@@ -205,6 +205,14 @@ class Service:
             "data_evidence": answer.data_evidence,
             "trace_id": trace.trace_id,
         }
+        # 契约 §6 要求 trace 里能看到「执行的工具调用或 SQL，以及结果」。
+        # 之前只有 live 模式经 `trace.llm` 记下了模型那一侧，降级模式走的是模板作答，
+        # 工具结果只进了对外的 `data_evidence`，trace 里反而看不到——调试时最想看的就是它。
+        # 这里把回答实际用到的证据与引用也记进去，两种模式就都有完整链路了。
+        trace.step(
+            "evidence",
+            {"data_evidence": answer.data_evidence, "citations": answer.citations},
+        )
         trace.step("response", {"answer_type": answer.answer_type, "notes": answer.notes})
         self.traces.save(trace)
         return payload
@@ -215,7 +223,9 @@ class Service:
                 return Answer(answer="没有收到问题内容，请再说一次。", answer_type="clarify")
             history = self.sessions.history(session_id)
             started = time.perf_counter()
-            plan = self.planner.plan(question)
+            # history 必须传进规划器：追问还原（“那 6 月呢”）就发生在规划第一步，
+            # 少了它，规划器会以为每句话都是没有上文的孤立提问。
+            plan = self.planner.plan(question, history)
             trace.step("plan", plan.as_trace(), started=started)
             answer = self._run_engine(plan, trace, history)
             self.sessions.append(
@@ -277,9 +287,15 @@ class Service:
 
 
 def _reason_cn(exc: LLMError) -> str:
+    """把失败原因写成给运营看的一句话。
+
+    **不能带数字。** 契约 §5 要求拒答时「不得出现编造的数字」，评测会逐字查：
+    「接口返回错误码 401」里的 401 在问句里没有，直接判红。
+    具体的错误码仍然进 trace（`trace.error`）与 `notes`，排查时看得到，只是不给用户看。
+    """
     mapping = {
         "timeout": "调用超时",
-        "http_error": "接口返回错误码 %s" % (exc.status or ""),
+        "http_error": "接口返回了错误",
         "empty_content": "返回了空回答",
         "length": "输出额度被思考耗尽",
         "content_filter": "被内容过滤拦截",

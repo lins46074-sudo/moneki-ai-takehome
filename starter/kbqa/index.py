@@ -12,7 +12,7 @@ from typing import Optional
 
 from .aliases import AliasTable, build_alias_table
 from .chunker import CHUNKER_VERSION, Chunk, chunk_documents
-from .loader import Document, load_knowledge_base
+from .loader import LOADER_VERSION, Document, load_knowledge_base
 from .tokenizer import TOKENIZER_VERSION, tokenize
 
 INDEX_VERSION = "bm25-3"
@@ -21,14 +21,21 @@ B = 0.75
 
 
 def content_key(kb_dir: Path) -> str:
-    """缓存键 = 三个版本号 + **知识库全部文件的路径与内容**。
+    """缓存键 = 四个版本号 + **知识库全部文件的路径与内容**。
 
-    之前只哈希版本号，所以换了 `knowledge_base/` 目录缓存照样命中，服务读的还是旧文档
-    ——契约 §8 明确要求「索引必须能感知知识库的变化」。仓库里跟着提交的
+    版本号覆盖「代码怎么读、怎么切、怎么分词」这几种变化；内容哈希覆盖「文档本身变了」。
+    只哈希版本号时，换了 `knowledge_base/` 目录缓存照样命中，服务读的还是旧文档
+    ——契约 §8 明确要求「索引必须能感知知识库的变化」；仓库里跟着提交的
     `.cache/index.json` 会把这个问题藏起来，评审换一套知识库时才炸。
+    只哈希内容时，改了 loader 的元数据格式缓存不会失效，旧格式会一直传下去。
     """
     digest = hashlib.sha256()
-    digest.update(("%s|%s|%s\n" % (INDEX_VERSION, CHUNKER_VERSION, TOKENIZER_VERSION)).encode())
+    digest.update(
+        (
+            "%s|%s|%s|%s\n"
+            % (INDEX_VERSION, CHUNKER_VERSION, TOKENIZER_VERSION, LOADER_VERSION)
+        ).encode()
+    )
     if kb_dir.exists():
         for path in sorted(kb_dir.rglob("*")):
             if not path.is_file() or path.name.startswith("."):

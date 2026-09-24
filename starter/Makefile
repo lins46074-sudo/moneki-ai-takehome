@@ -7,7 +7,7 @@ PY ?= .venv/bin/python
 PORT ?= 8000
 export DATA_DIR KB_DIR VAR_DIR LLM_BASE_URL LLM_API_KEY LLM_MODEL
 
-.PHONY: setup rebuild run test web web-dev clean
+.PHONY: setup rebuild run test test-fast eval eval-mine web web-dev clean
 
 setup:          ## 建虚拟环境并装依赖
 	uv venv --python 3.12
@@ -19,8 +19,19 @@ rebuild:        ## 从 DATA_DIR 与 KB_DIR 重建清洗表和检索索引
 run:            ## 启动服务（同时托管看板页面），默认 8000 端口
 	$(PY) -m uvicorn kbqa.server:app --host 127.0.0.1 --port $(PORT)
 
-test:           ## 跑测试
+test:           ## 跑测试（含「评测即回归」：会起服务跑一遍公开题库与自补题库）
 	$(PY) -m pytest tests -q
+
+test-fast:      ## 只跑单元测试，跳过要起服务的评测回归
+	$(PY) -m pytest tests -q --ignore=tests/test_eval_regression.py
+
+eval:           ## 对当前服务跑公开题库（服务要先起来），报告写到 eval/runs/
+	cd .. && python eval/run_eval.py --base-url http://localhost:$(PORT) \
+		--questions eval/public_questions.jsonl --out eval/runs/latest
+
+eval-mine:      ## 跑自补题库
+	cd .. && python eval/run_eval.py --base-url http://localhost:$(PORT) \
+		--questions eval/my_questions.jsonl --out eval/runs/my-questions
 
 web:            ## 构建看板前端到 web/dist（产物已提交，改了前端才需要重跑）
 	cd ../web && npm install && npm run build
