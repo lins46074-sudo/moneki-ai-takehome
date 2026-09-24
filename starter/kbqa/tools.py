@@ -88,6 +88,15 @@ class DataTools:
     def products(self) -> list[dict]:
         return [dict(r) for r in self.conn.execute("SELECT * FROM products ORDER BY product_id")]
 
+    def payments(self) -> list[str]:
+        """清洗表里实际出现过的支付方式，给看板的筛选项用。"""
+        return [
+            row[0]
+            for row in self.conn.execute(
+                "SELECT DISTINCT payment FROM sales_clean WHERE payment <> '' ORDER BY payment"
+            )
+        ]
+
     def data_period(self) -> dict:
         row = self.conn.execute("SELECT MIN(date), MAX(date) FROM sales_clean").fetchone()
         return {"start": row[0], "end": row[1]}

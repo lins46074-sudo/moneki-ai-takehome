@@ -36,6 +36,63 @@ def test_metrics_daily_ok(client):
     assert len(response.json()["days"]) == 5
 
 
+def test_metrics_summary_filters_echoed(client):
+    response = client.get(
+        "/api/metrics/summary",
+        params={"start": "2026-06-01", "end": "2026-06-30", "store_id": " s03 "},
+    )
+    assert response.status_code == 200
+    assert response.json()["store_id"] == "S03"
+
+
+def test_metrics_top_products_ok(client):
+    response = client.get(
+        "/api/metrics/top_products", params={"start": "2026-06-01", "end": "2026-06-30"}
+    )
+    assert response.status_code == 200
+    products = response.json()["products"]
+    assert 0 < len(products) <= 10
+    # 排好序的名次和占比，前端直接渲染
+    assert [item["rank"] for item in products] == list(range(1, len(products) + 1))
+    assert all(0 <= item["share"] <= 1 for item in products)
+
+
+def test_metrics_by_store_ok(client):
+    response = client.get(
+        "/api/metrics/by_store", params={"start": "2026-06-01", "end": "2026-06-30"}
+    )
+    assert response.status_code == 200
+    stores = response.json()["stores"]
+    assert len(stores) == 5
+    # 按净营业额从高到低排
+    revenues = [store["net_revenue"] for store in stores]
+    assert revenues == sorted(revenues, reverse=True)
+
+
+def test_meta_lists_dashboard_filters(client):
+    body = client.get("/api/meta").json()
+    assert body["today"] == "2026-09-01"
+    assert [store["store_id"] for store in body["stores"]] == ["S01", "S02", "S03", "S04", "S05"]
+    assert all(product["product_id"] for product in body["products"])
+    assert body["payments"]
+
+
+def test_data_quality_breakdown_is_ordered(client):
+    """面板要按 KB-001 §3 的规则顺序展示，并且每一条都有中文标签。"""
+    body = client.get("/api/data_quality").json()
+    reasons = [item["reason"] for item in body["removal_breakdown"]]
+    assert reasons == [
+        "1_unparseable_date",
+        "2_empty_amount",
+        "3_qty_le_zero",
+        "4_store_not_in_stores",
+        "5_product_not_in_products",
+        "6_duplicate_row",
+    ]
+    assert all(item["label"] for item in body["removal_breakdown"])
+    assert sum(item["rows"] for item in body["removal_breakdown"]) > 0
+
+
 def test_retrieve_ok(client):
     response = client.post("/api/retrieve", json={"query": "退款", "top_k": 5})
     assert response.status_code == 200

@@ -40,15 +40,21 @@ make rebuild DATA_DIR=/path/to/data KB_DIR=/path/to/knowledge_base
 
 ## 接口
 
-| 方法 | 路径 |
-|---|---|
-| GET | `/api/health` |
-| GET | `/api/metrics/summary` |
-| GET | `/api/metrics/daily` |
-| POST | `/api/retrieve` |
-| POST | `/api/chat` |
-| GET | `/api/trace/{trace_id}` |
-| GET | `/api/data_quality` |
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/health` | 契约 §1 |
+| GET | `/api/metrics/summary` | 契约 §2 |
+| GET | `/api/metrics/daily` | 契约 §3 |
+| GET | `/api/metrics/top_products` | 看板 Top 商品表（契约之外的补充） |
+| GET | `/api/metrics/by_store` | 看板门店对比（契约之外的补充） |
+| GET | `/api/meta` | 看板筛选项：门店、商品、支付方式、数据范围 |
+| POST | `/api/retrieve` | 契约 §4 |
+| POST | `/api/chat` | 契约 §5 |
+| GET | `/api/trace/{trace_id}` | 契约 §6 |
+| GET | `/api/data_quality` | 看板数据质量面板：清洗台账 + 剔除明细 |
+
+指标口径全部按 KB-001（现行 v3）实现，见 `kbqa/tools.py`。
+补充接口只是把同一套口径换一种切法，没有第二份算法。
 
 ## 两种模式
 

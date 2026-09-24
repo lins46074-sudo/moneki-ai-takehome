@@ -8,7 +8,7 @@ from typing import Any, Optional
 
 from .answerer import Answerer
 from .schemas import Answer
-from .cleaning import build_clean_db
+from .cleaning import REMOVAL_REASONS, build_clean_db
 from .docfacts import DocFacts
 from .config import Settings, load_settings
 from .entities import Catalog
@@ -84,6 +84,66 @@ class Service:
 
     def metrics_daily(self, start: str, end: str, store_id=None, product_id=None) -> dict:
         return self.tools.daily_metrics(start, end, store_id, product_id)
+
+    def top_products(self, start: str, end: str, store_id=None, limit: int = 10) -> dict:
+        """看板的 Top 商品表。
+
+        在工具结果上补 `rank` 与占净营业额的比 `share`，让前端不用自己算，
+        也不给模型看的工具结果加字段（那是第三关的输入，形状要保持稳定）。
+        """
+        payload = self.tools.top_products(start, end, store_id, limit)
+        total = payload.get("products") and self.tools.query_metrics(start, end, store_id)["net_revenue"]
+        payload["total_net_revenue"] = total or 0.0
+        for position, item in enumerate(payload["products"], start=1):
+            item["rank"] = position
+            item["share"] = round(item["net_revenue"] / total, 6) if total else 0.0
+        return payload
+
+    def by_store(self, start: str, end: str, product_id=None) -> dict:
+        """门店对比，看板右侧的第二张图用。"""
+        payload = self.tools.by_store(start, end, product_id)
+        total = self.tools.query_metrics(start, end, product_id=product_id)["net_revenue"]
+        payload["total_net_revenue"] = total
+        for item in payload["stores"]:
+            item["share"] = round(item["net_revenue"] / total, 6) if total else 0.0
+        return payload
+
+    def meta(self) -> dict:
+        """看板的筛选元数据：门店、商品、支付方式、数据范围。
+
+        全部从数据库读，前端不硬编码任何门店号或商品名（契约 §8）。
+        """
+        return {
+            "today": self.settings.today.isoformat(),
+            "data_period": self.data_period,
+            "stores": self.tools.stores(),
+            "products": self.tools.products(),
+            "payments": self.tools.payments(),
+        }
+
+    def data_quality(self) -> dict:
+        """数据质量面板：按 KB-001 §3 的规则顺序给出中文台账。"""
+        report = self.tools.cleaning_report()
+        removed = report.get("removed", {})
+        labels = report.get("removed_labels", {})
+        return {
+            "cleaning_report": report,
+            # 按规则顺序排好的剔除明细，前端直接渲染，不用自己排一遍顺序。
+            "removal_breakdown": [
+                {"reason": key, "label": labels.get(key, key), "rows": int(removed.get(key, 0))}
+                for key in REMOVAL_REASONS
+            ],
+            "recovered_breakdown": [
+                {
+                    "reason": key,
+                    "label": report.get("recovered_labels", {}).get(key, key),
+                    "rows": int(report.get("recovered", {}).get(key, 0)),
+                }
+                for key in report.get("recovered", {})
+            ],
+            "data_period": self.data_period,
+            "kb_warnings": self.index.warnings,
+        }
 
     def retrieve(self, query: str, top_k: int = 5) -> dict:
         """契约 §4：片段够就恰好给 top_k 条，不够才少给。

@@ -86,6 +86,35 @@ def metrics_daily(
     return bad or service().metrics_daily(start, end, store_id, product_id)
 
 
+@app.get("/api/metrics/top_products")
+def metrics_top_products(
+    start: str = Query(...),
+    end: str = Query(...),
+    store_id: Optional[str] = None,
+    limit: int = Query(default=10, ge=1, le=100),
+):
+    """看板的 Top 商品表。契约之外的补充接口，字段可以在契约允许的范围内自定。"""
+    bad = _bad_date(start, end)
+    return bad or service().top_products(start, end, store_id, limit)
+
+
+@app.get("/api/metrics/by_store")
+def metrics_by_store(
+    start: str = Query(...),
+    end: str = Query(...),
+    product_id: Optional[str] = None,
+):
+    """门店对比图。"""
+    bad = _bad_date(start, end)
+    return bad or service().by_store(start, end, product_id)
+
+
+@app.get("/api/meta")
+def meta() -> dict:
+    """看板的筛选元数据：门店、商品、支付方式、数据范围。"""
+    return service().meta()
+
+
 @app.post("/api/retrieve")
 def retrieve(request: RetrieveRequest) -> dict:
     return service().retrieve(_as_text(request.query), request.top_k)
@@ -108,9 +137,4 @@ def trace(trace_id: str):
 @app.get("/api/data_quality")
 def data_quality() -> dict:
     """第一关的“数据质量”面板：清洗掉了多少行、各因为什么。"""
-    current = service()
-    return {
-        "cleaning_report": current.tools.cleaning_report(),
-        "data_period": current.data_period,
-        "kb_warnings": current.index.warnings,
-    }
+    return service().data_quality()
