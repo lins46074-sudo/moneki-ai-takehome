@@ -50,7 +50,11 @@ class DataTools:
             self._local.conn = None
 
     def _where(self, start: str, end: str, store_id=None, product_id=None) -> tuple[str, list]:
-        clause = ["date >= ?", "date < ?"]
+        """区间是**闭区间**（契约 §2：`start`、`end` 都算在里面）。
+
+        清洗表里的日期已经统一成 ISO，所以这里可以直接比字符串。
+        """
+        clause = ["date >= ?", "date <= ?"]
         params: list[Any] = [start, end]
         if store_id:
             clause.append("store_id = ?")
@@ -91,60 +95,91 @@ class DataTools:
     # -- 指标 -------------------------------------------------------------------
 
     def query_metrics(self, start: str, end: str, store_id=None, product_id=None) -> dict:
-        """营业额、退款、订单数、客单价、销量。客单价 = 营业额 ÷ 明细行数。"""
+        """营业额、退款、订单数、客单价、销量，口径见 KB-001 §4。
+
+        - 净营业额 = 销售行金额 + 退款行金额（退款金额本身为负，实际是相减）
+        - 退款金额 = 退款行金额之和的绝对值
+        - 有效订单数 = 销售行中不同 `order_id` 的个数，多行订单算 1 单
+        - 客单价 = 净营业额 ÷ 有效订单数
+        - 销量 = 销售行数量 − 退款行数量
+
+        销售行与退款行按 `amount_cents` 的正负区分，与 §4 的措辞一一对应。
+        退款行的 `qty` 记的是**正数**（退了几份），金额才是负数，所以销量这里是
+        「减去」；`tests/test_metrics.py::test_refund_rows_have_positive_qty` 守着这个约定。
+        """
         where, params = self._where(start, end, store_id, product_id)
-        # 退款行不是营业，直接排掉，省得把营业额算少了。
         row = self.conn.execute(
             """
             SELECT COALESCE(SUM(amount_cents), 0),
-                   0,
-                   COUNT(*),
-                   COALESCE(SUM(qty), 0)
-            FROM sales_clean WHERE %s AND is_refund = 0
+                   COALESCE(SUM(CASE WHEN amount_cents < 0 THEN amount_cents ELSE 0 END), 0),
+                   COUNT(DISTINCT CASE WHEN amount_cents > 0 THEN order_id END),
+                   COALESCE(SUM(CASE WHEN amount_cents < 0 THEN -qty
+                                     WHEN amount_cents > 0 THEN qty
+                                     ELSE 0 END), 0)
+            FROM sales_clean WHERE %s
             """
             % where,
             params,
         ).fetchone()
         net_cents, refund_cents, orders, qty = int(row[0]), int(row[1]), int(row[2]), int(row[3])
-        aov = round2(Decimal(net_cents) / 100 / orders) if orders else None
         return {
             "start": start,
             "end": end,
-            "store_id": store_id,
-            "product_id": product_id,
+            "store_id": (store_id or "").strip().upper() or None,
+            "product_id": (product_id or "").strip().upper() or None,
             "net_revenue": yuan(net_cents),
             "refund_amount": yuan(-refund_cents),
             "orders": orders,
-            "aov": aov,
+            "aov": self.aov(net_cents, orders),
             "qty": qty,
         }
 
+    @staticmethod
+    def aov(net_cents: int, orders: int) -> Optional[float]:
+        """KB-001 §4：净营业额 ÷ 有效订单数，四舍五入保留 2 位。
+
+        没有订单时契约 §2 要求返回 `null`，不是 0——0 会被读成「客单价是 0 元」。
+        """
+        if not orders:
+            return None
+        return round2(Decimal(net_cents) / 100 / orders)
+
     def daily_metrics(self, start: str, end: str, store_id=None, product_id=None) -> dict:
-        """区间内每一天都要有一条记录，没有营业额的日期也要出现。"""
+        """按天拆开同一套口径（KB-001 §4）。
+
+        契约 §3 要求区间内**每一天**都有一条记录：没有营业额的日期补 0，
+        `aov` 补 `null`。退款行按退款行自己的日期归属，不回溯到原单日期（§4 末条）。
+        """
         where, params = self._where(start, end, store_id, product_id)
         rows = self.conn.execute(
             """
             SELECT date,
                    COALESCE(SUM(amount_cents), 0),
-                   COUNT(DISTINCT CASE WHEN is_refund=0 THEN order_id END)
+                   COALESCE(SUM(CASE WHEN amount_cents < 0 THEN amount_cents ELSE 0 END), 0),
+                   COUNT(DISTINCT CASE WHEN amount_cents > 0 THEN order_id END),
+                   COALESCE(SUM(CASE WHEN amount_cents < 0 THEN -qty
+                                     WHEN amount_cents > 0 THEN qty
+                                     ELSE 0 END), 0)
             FROM sales_clean WHERE %s GROUP BY date
             """
             % where,
             params,
         ).fetchall()
-        found = {r[0]: (int(r[1]), int(r[2])) for r in rows}
+        found = {r[0]: (int(r[1]), int(r[2]), int(r[3]), int(r[4])) for r in rows}
         days = []
         cursor = date.fromisoformat(start)
         last = date.fromisoformat(end)
         while cursor <= last:
             key = cursor.isoformat()
-            net_cents, orders = found.get(key, (0, 0))
+            net_cents, refund_cents, orders, qty = found.get(key, (0, 0, 0, 0))
             days.append(
                 {
                     "date": key,
                     "net_revenue": yuan(net_cents),
+                    "refund_amount": yuan(-refund_cents),
                     "orders": orders,
-                    "aov": round2(Decimal(net_cents) / 100 / orders) if orders else None,
+                    "aov": self.aov(net_cents, orders),
+                    "qty": qty,
                 }
             )
             cursor += timedelta(days=1)
@@ -156,9 +191,11 @@ class DataTools:
         rows = self.conn.execute(
             """
             SELECT payment,
-                   COUNT(DISTINCT CASE WHEN is_refund=0 THEN order_id END),
+                   COUNT(DISTINCT CASE WHEN amount_cents > 0 THEN order_id END),
                    COALESCE(SUM(amount_cents), 0),
-                   COALESCE(SUM(CASE WHEN is_refund=0 THEN qty ELSE -qty END), 0)
+                   COALESCE(SUM(CASE WHEN amount_cents < 0 THEN -qty
+                                     WHEN amount_cents > 0 THEN qty
+                                     ELSE 0 END), 0)
             FROM sales_clean WHERE %s GROUP BY payment
             """
             % where,
@@ -191,8 +228,10 @@ class DataTools:
             """
             SELECT s.product_id, p.product_name, p.product_category,
                    COALESCE(SUM(s.amount_cents), 0),
-                   COUNT(DISTINCT CASE WHEN s.is_refund=0 THEN s.order_id END),
-                   COALESCE(SUM(CASE WHEN s.is_refund=0 THEN s.qty ELSE -s.qty END), 0)
+                   COUNT(DISTINCT CASE WHEN s.amount_cents > 0 THEN s.order_id END),
+                   COALESCE(SUM(CASE WHEN s.amount_cents < 0 THEN -s.qty
+                                     WHEN s.amount_cents > 0 THEN s.qty
+                                     ELSE 0 END), 0)
             FROM sales_clean s LEFT JOIN products p ON p.product_id = s.product_id
             WHERE %s GROUP BY s.product_id ORDER BY 4 DESC
             """
@@ -259,7 +298,7 @@ class DataTools:
 
     def first_sale_date(self, product_id: str) -> Optional[str]:
         row = self.conn.execute(
-            "SELECT MIN(date) FROM sales_clean WHERE product_id = ? AND is_refund = 0",
+            "SELECT MIN(date) FROM sales_clean WHERE product_id = ? AND amount_cents > 0",
             (product_id.strip().upper(),),
         ).fetchone()
         return row[0] if row and row[0] else None
@@ -278,7 +317,7 @@ class DataTools:
         rows = self.conn.execute(
             """
             SELECT date, amount_cents, qty, store_id FROM sales_clean
-            WHERE product_id = ? AND is_refund = 0 AND qty > 0 AND date >= ? AND date <= ?%s
+            WHERE product_id = ? AND amount_cents > 0 AND qty > 0 AND date >= ? AND date <= ?%s
             ORDER BY date
             """
             % clause,

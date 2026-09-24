@@ -291,7 +291,14 @@ def build_clean_db(source: Path, target: Path) -> CleaningReport:
 
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.exists():
-        target.unlink()
+        try:
+            target.unlink()
+        except PermissionError as exc:
+            # Windows 下服务在跑时会占着这个文件。原始报错只有一行 WinError 32，
+            # 看不出该做什么，这里换成能直接照做的提示。
+            raise RuntimeError(
+                "无法覆盖 %s：文件正被占用。服务还在运行时请先停掉它，再执行重建。" % target
+            ) from exc
     out = sqlite3.connect(target)
     try:
         out.executescript(_SCHEMA)

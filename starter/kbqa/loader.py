@@ -9,12 +9,21 @@ from datetime import date
 from pathlib import Path
 from typing import Optional
 
-SUPPORTED_SUFFIXES = {".md", ".markdown"}
+#: 知识库里有 md、txt、html 三种格式，都要能进索引。
+SUPPORTED_SUFFIXES = {".md", ".markdown", ".txt", ".html", ".htm"}
+
+#: 后缀到格式名的映射。之前 `.txt` 落进 else 分支被当成 html 处理，是错的。
+_FMT_BY_SUFFIX = {".md": "md", ".markdown": "md", ".txt": "txt", ".html": "html", ".htm": "html"}
 
 #: 文件名开头的编号就是 doc_id，与文件格式无关（契约 §0）。
 _DOC_ID = re.compile(r"^(KB-\d+)")
 _FRONT_MATTER = re.compile(r"^---\s*\n(.*?)\n---\s*\n?", re.S)
 _STORE_CODE = re.compile(r"\bS\d{2}\b")
+
+#: HTML 转纯文本用：先整块去掉脚本与样式，再剥标签。
+_SCRIPT_OR_STYLE = re.compile(r"<(script|style)\b.*?</\1\s*>", re.S | re.I)
+_HTML_TAG = re.compile(r"<[^>]*>")
+_BLANK_RUN = re.compile(r"\n{3,}")
 
 #: 正文里的生效日期：优先“自 2026 年 8 月 15 日起”“生效日期：2026-07-01”这类明确写法。
 _CN_DATE = r"(\d{4})\s*[-/年]\s*(\d{1,2})\s*[-/月]\s*(\d{1,2})\s*日?"
@@ -164,22 +173,36 @@ def _title_from_body(text: str, fallback: str) -> str:
     return fallback
 
 
+def html_to_text(raw: str) -> str:
+    """把 HTML 正文变成纯文本：去掉脚本、样式与标签，再解开实体。
+
+    KB-061 的 `<style>` 里有整段 CSS，直接入库会被 BM25 当成正文：既抬高无关词频，
+    也把真正的内容挤到切块外面去。所以先把这两块整段丢掉再剥标签。
+    """
+    text = _SCRIPT_OR_STYLE.sub("\n", raw)
+    text = _HTML_TAG.sub("\n", text)
+    text = html_module.unescape(text)
+    lines = [line.strip() for line in text.splitlines()]
+    return _BLANK_RUN.sub("\n\n", "\n".join(lines)).strip()
+
+
 def load_document(path: Path) -> Optional[Document]:
     """读一个文件。不是知识库文档（没有 KB 编号）时返回 None。"""
     warnings: list[str] = []
     raw = path.read_bytes()
     text = decode_bytes(raw, path, warnings)
     suffix = path.suffix.lower()
-    fmt = {".md": "md", ".markdown": "md", ".txt": "txt"}.get(suffix, "html")
+    fmt = _FMT_BY_SUFFIX.get(suffix, "txt")
 
     meta: dict = {}
     if fmt == "md":
         meta, text = parse_front_matter(text)
     elif fmt == "html":
-        # html 直接按文本入库，标签也就那么几个，BM25 自己会忽略。
+        # 标题必须从原始 HTML 里取，剥完标签就找不到了。
         match_title = _HTML_TITLE.search(text)
         html_title = html_module.unescape(match_title.group(1).strip()) if match_title else ""
         meta = {"title": html_title.split("-")[0].strip() or html_title}
+        text = html_to_text(text)
 
     match = _DOC_ID.match(path.name)
     doc_id = str(meta.get("doc_id") or (match.group(1) if match else "")).strip()

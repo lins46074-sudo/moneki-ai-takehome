@@ -21,9 +21,22 @@ B = 0.75
 
 
 def content_key(kb_dir: Path) -> str:
-    """缓存键：三个版本号拼起来哈希一下。改了切块或分词，键就变，缓存自动失效。"""
+    """缓存键 = 三个版本号 + **知识库全部文件的路径与内容**。
+
+    之前只哈希版本号，所以换了 `knowledge_base/` 目录缓存照样命中，服务读的还是旧文档
+    ——契约 §8 明确要求「索引必须能感知知识库的变化」。仓库里跟着提交的
+    `.cache/index.json` 会把这个问题藏起来，评审换一套知识库时才炸。
+    """
     digest = hashlib.sha256()
     digest.update(("%s|%s|%s\n" % (INDEX_VERSION, CHUNKER_VERSION, TOKENIZER_VERSION)).encode())
+    if kb_dir.exists():
+        for path in sorted(kb_dir.rglob("*")):
+            if not path.is_file() or path.name.startswith("."):
+                continue
+            digest.update(path.relative_to(kb_dir).as_posix().encode())
+            digest.update(b"\0")
+            digest.update(path.read_bytes())
+            digest.update(b"\0")
     return digest.hexdigest()
 
 
