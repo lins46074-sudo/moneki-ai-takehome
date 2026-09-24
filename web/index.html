@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>经营看板 · Moneki</title>
+    <script>
+      // 在样式生效前把主题定下来，避免刷新时先亮后暗闪一下。
+      // 用户没手动选过就跟随系统设置。
+      ;(function () {
+        var saved = null
+        try {
+          saved = localStorage.getItem('moneki-theme')
+        } catch (error) {
+          /* 隐私模式下读不了 localStorage，忽略 */
+        }
+        var prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
+        document.documentElement.dataset.theme = saved || (prefersDark ? 'dark' : 'light')
+      })()
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

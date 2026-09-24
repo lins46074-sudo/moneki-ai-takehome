@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import date
+from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import FastAPI, Query
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from .config import PROJECT_DIR
 from .service import Service
 
 app = FastAPI(title="经营看板 + 问答服务", version="0.9.3")
@@ -138,3 +142,19 @@ def trace(trace_id: str):
 def data_quality() -> dict:
     """第一关的“数据质量”面板：清洗掉了多少行、各因为什么。"""
     return service().data_quality()
+
+
+# -- 看板静态资源 ---------------------------------------------------------------
+# 挂载必须放在所有 /api 路由之后：Starlette 按注册顺序匹配，反过来会把接口吞掉。
+_WEB_DIST = Path(os.environ.get("WEB_DIST") or (PROJECT_DIR.parent / "web" / "dist"))
+if _WEB_DIST.is_dir():
+    app.mount("/", StaticFiles(directory=str(_WEB_DIST), html=True), name="dashboard")
+else:  # pragma: no cover - 没构建前端时服务照常起，只是没有页面
+
+    @app.get("/")
+    def dashboard_missing() -> dict:
+        return {
+            "error": "前端还没有构建",
+            "how_to_build": "cd web && npm install && npm run build（或 make web）",
+            "api_docs": "/docs",
+        }

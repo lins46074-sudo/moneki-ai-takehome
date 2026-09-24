@@ -1,0 +1,20 @@
+{
+  "name": "moneki-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "经营看板前端（Vue 3 + ECharts），由 starter/kbqa/server.py 托管构建产物",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "echarts": "^6.1.0",
+    "vue": "^3.5.43"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^6.0.9",
+    "vite": "^8.3.0"
+  }
+}

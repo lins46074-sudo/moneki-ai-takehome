@@ -1,0 +1,4 @@
+node_modules/
+# 截图是 tools/shoot.mjs 的临时产物，不进仓库
+shots/
+*.local
